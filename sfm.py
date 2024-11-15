@@ -26,8 +26,16 @@ def get_init_image_ids(scene_graph: dict) -> (str, str):
     """
     max_pair = [None, None]  # dummy value
     """ YOUR CODE HERE """
-    
-
+    max_num_inliers = 0
+    for image_id1 in scene_graph.keys():
+        neighbors = scene_graph[image_id1]
+        for image_id2 in neighbors:
+            
+            matches = load_matches(image_id1=image_id1, image_id2=image_id2) #读取两张图片的索引
+            num_inliers = matches.shape[0]
+            if num_inliers > max_num_inliers:
+                max_num_inliers = num_inliers #更新所有图像对中最大内点数
+                max_pair = [image_id1, image_id2] #三维重建中提升重建质量
 
     """ END YOUR CODE HERE """
     image_id1, image_id2 = sorted(max_pair)
@@ -45,7 +53,7 @@ def load_matches(image_id1: str, image_id2: str) -> np.ndarray:
     for image_id2 """
     sorted_nodes = sorted([image_id1, image_id2])
     match_id = '_'.join(sorted_nodes)
-    match_file = os.path.join(RANSAC_MATCH_DIR, match_id + '.npy')
+    match_file = os.path.join(RANSAC_MATCH_DIR, match_id + '.npy') #加载RANSAC的匹配点文件
     matches = np.load(match_file)
     if sorted_nodes[0] == image_id2:
         matches = np.flip(matches, axis=1)
@@ -78,9 +86,12 @@ def get_init_extrinsics(image_id1: str, image_id2: str, intrinsics: np.ndarray) 
 
     extrinsics2 = np.zeros(shape=[3, 4], dtype=float)
     """ YOUR CODE HERE """
-    
+    extrinsics1 = np.array([[1, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 0, 1, 0]]) #外参相机位姿，这里假设相机1的位姿，这样可以直接考虑相机2的相对位姿
 
-
+    _, R, t, _ = cv2.recoverPose(E=essential_mtx, points1=points2d_1, points2=points2d_2, cameraMatrix=intrinsics) #本质矩阵、点匹配以及第二个相机内参返回位姿
+    extrinsics2 = np.concatenate((R, t), axis=1)
     """ END YOUR CODE HERE """
     return extrinsics1, extrinsics2
 
@@ -154,9 +165,18 @@ def get_reprojection_residuals(points2d: np.ndarray, points3d: np.ndarray, intri
     """
     residuals = np.zeros(points2d.shape[0])
     """ YOUR CODE HERE """
-   
+    homo_3d_points = np.concatenate((points3d, np.ones((points3d.shape[0], 1))), axis=1) #N×3→N×4
+    homo_3d_points_T = np.transpose(homo_3d_points) # N×4→4×N
 
+    extrinsics = np.concatenate([rotation_mtx, tvec.reshape(-1, 1)], axis=1) #3×3→3×4
+    P = np.matmul(intrinsics, extrinsics) # (3×3)*(3×4)=3×4
+    
+    calculated_3d = np.einsum('ij,jk->ik',P, homo_3d_points_T) # (3×4)*(4×N)=3×N
+    calculated_3d /= calculated_3d[-1, :] # 归一化
+    calculated_pts2d = calculated_3d[:-1] # 3×N→2×N
+    calculated_pts2d = np.transpose(calculated_pts2d) #2×N→N×2
 
+    residuals = np.linalg.norm(points2d - calculated_pts2d, axis=1)
     """ END YOUR CODE HERE """
     return residuals
 
@@ -202,14 +222,24 @@ def solve_pnp(image_id: str, point2d_idxs: np.ndarray, all_points3d: np.ndarray,
         2. convert the returned rotation vector to rotation matrix using cv2.Rodrigues
         3. compute the reprojection residuals
         """
-       
+        _, rotation_vector, tvec = cv2.solvePnP(objectPoints=selected_pts3d, 
+                                   imagePoints=selected_pts2d, 
+                                   cameraMatrix=intrinsics, 
+                                   distCoeffs=None, 
+                                   flags=cv2.SOLVEPNP_ITERATIVE) #旋转向量与，位置求解
 
+        rotation_mtx, _ = cv2.Rodrigues(rotation_vector)
 
+        residuals = get_reprojection_residuals(points2d=points2d, 
+                                  points3d=points3d,
+                                  intrinsics=intrinsics,
+                                  rotation_mtx=rotation_mtx,
+                                  tvec=tvec)
         """ END YOUR CODE HERE """
 
-        is_inlier = residuals <= inlier_threshold
+        is_inlier = residuals <= inlier_threshold #判断是否为内点
         num_inliers = np.sum(is_inlier).item()
-        if num_inliers > max_num_inliers:
+        if num_inliers > max_num_inliers: #增加最优解
             max_rotation_mtx = rotation_mtx
             max_tvec = tvec
             max_is_inlier = is_inlier
@@ -254,9 +284,13 @@ def add_points3d(image_id1: str, image_id2: str, all_extrinsic: dict, intrinsics
     triangulate between the image points for the unregistered matches for image_id1 and image_id2 to get new points3d
     new_points3d = triangulate(..., kp_idxs1=matches[:, 0], kp_idxs2=matches[:, 1], ...)
     """
-    
-
-
+    new_points3d = triangulate(image_id1=image_id1, 
+                               image_id2=image_id2, 
+                               kp_idxs1=matches[:, 0], 
+                               kp_idxs2=matches[:, 1], 
+                               extrinsics1=all_extrinsic[image_id1],
+                               extrinsics2=all_extrinsic[image_id2],
+                               intrinsics=intrinsics)
     """ END YOUR CODE HERE """
 
     num_new_points3d = new_points3d.shape[0]
@@ -285,10 +319,17 @@ def get_next_pair(scene_graph: dict, registered_ids: list):
     """
     max_new_id, max_registered_id, max_num_inliers = None, None, 0
     """ YOUR CODE HERE """
-    
-
-
-    
+    for registered_id in registered_ids:
+        neighbors = scene_graph[registered_id]
+        for new_id in neighbors:
+            if new_id not in registered_ids:
+                matches = load_matches(registered_id, new_id)
+                num_inliers = matches.shape[0]
+                if num_inliers > max_num_inliers:
+                    max_num_inliers = num_inliers
+                    max_new_id = new_id
+                    max_registered_id = registered_id
+                        
     """ END YOUR CODE HERE """
     return max_new_id, max_registered_id
 

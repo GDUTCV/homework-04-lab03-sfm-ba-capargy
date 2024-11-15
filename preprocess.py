@@ -118,9 +118,9 @@ def detect_keypoints(image_file: os.path):
     """ YOUR CODE HERE:
     Detect keypoints using cv2.SIFT_create() and sift.detectAndCompute
     """
-    
-
-
+    image = cv2.imread(image_file)
+    sift = cv2.SIFT_create() # 存储关键点特征描述子
+    keypoints, descriptors = sift.detectAndCompute(image, None) # 储存关键点信息，特殊描述符
     """ END YOUR CODE HERE. """
 
     keypoints = [encode_keypoint(kp=kp) for kp in keypoints]
@@ -151,25 +151,28 @@ def create_feature_matches(image_file1: os.path, image_file2: os.path, lowe_rati
         <lowe_ratio> x distance of the second best match.
         min_matches: the minimum number of matches for the feature matches to exist..
     """
-    image_id1 = os.path.basename(image_file1)[:-4]
-    image_id2 = os.path.basename(image_file2)[:-4]
-    match_id = '{}_{}'.format(image_id1, image_id2)
+    image_id1 = os.path.basename(image_file1)[:-4]  #图片1id
+    image_id2 = os.path.basename(image_file2)[:-4]  #图片2id
+    match_id = '{}_{}'.format(image_id1, image_id2) #id联合
 
-    match_save_file = os.path.join(BF_MATCH_DIR, match_id + '.npy')
-    image_save_file = os.path.join(BF_MATCH_IMAGE_DIR, match_id + '.png')
+    match_save_file = os.path.join(BF_MATCH_DIR, match_id + '.npy')        #匹配信息文件，文件保存BF_MATCH_DIR
+    image_save_file = os.path.join(BF_MATCH_IMAGE_DIR, match_id + '.png')  #匹配图片保存，文件保存在BF_MATCH_IMAGE_DIR
 
-    keypoints1, descriptors1 = get_detected_keypoints(image_id=image_id1)
-    keypoints2, descriptors2 = get_detected_keypoints(image_id=image_id2)
+    keypoints1, descriptors1 = get_detected_keypoints(image_id=image_id1)  #列出图1关键点
+    keypoints2, descriptors2 = get_detected_keypoints(image_id=image_id2)  #列出图2关键点
 
-    good_matches = []
+    good_matches = []  #连线
     """ 
     YOUR CODE HERE: 
     1. Run cv.BFMatcher() and matcher.knnMatch(descriptors1, descriptors2, 2)
     2. Filter the feature matches using the Lowe ratio test.
     """
-    
+    bf = cv2.BFMatcher()  #BF连接
+    matches = bf.knnMatch(descriptors1, descriptors2, 2)  #k近邻算法实现分类
 
-
+    for m, n in matches: #是来自两边图像的描述符m，n
+        if m.distance < lowe_ratio * n.distance:
+            good_matches.append([m]) #将噪声剔除留下非噪声连线（正常数据大于阈值即加入场景）
     """ END YOUR CODE HERE. """
     if len(good_matches) < min_matches:
         return match_id
@@ -242,9 +245,15 @@ def create_ransac_matches(image_file1: os.path, image_file2: os.path,
     Perform goemetric verification by finding the essential matrix between keypoints in the first image and keypoints in
     the second image using cv2.findEssentialMatrix(..., method=cv2.RANSAC, threshold=ransac_threshold, ...)
     """
-    
-
-
+    essential_mtx, is_inlier= cv2.findEssentialMat(
+        points1=points1, #图一特征点
+        points2=points2, #图二特征点
+        cameraMatrix=camera_intrinsics, #相机内参
+        method=cv2.RANSAC, #RANSAC鲁棒估计
+        prob=0.98, #估计置信度
+        threshold=ransac_threshold, #算法阈值
+        mask=None) #不采用掩码
+    #除了噪声剔除，还有一种RANSAC双视法过滤（轴度、基本矩阵、重要矩阵等）
     """ END YOUR CODE HERE """
 
     is_inlier = is_inlier.ravel().tolist()
@@ -278,9 +287,17 @@ def create_scene_graph(image_files: list, min_num_inliers: int = 40):
     Add edges to <graph> if the minimum number of geometrically verified inliers between images is at least  
     <min_num_inliers> 
     """
-    
+    for i in range(len(image_ids)):
+        id_1 = image_ids[i]
+        for j in range(i+1, len(image_ids)):
+            id_2 = image_ids[j]
+            match_id = '{}_{}'.format(id_1, id_2) #两联系图片id命名
+            match_save_file = os.path.join(RANSAC_MATCH_DIR, match_id + '.npy') #.npy文件
 
-    
+            if os.path.exists(match_save_file):
+                inliers = np.load(match_save_file)
+                if len(inliers) > min_num_inliers: #只有匹配特征超过一定数量才能添加联系
+                    graph.add_edge(i, j) #i，j是两张图的索引，通过NetworkX中的add_edge添加两张图的关系
     """ END YOUR CODE HERE """
 
     graph_dict = {node: [] for node in image_ids}
